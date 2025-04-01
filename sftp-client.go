@@ -28,33 +28,6 @@ func NewSftpClient(config *Config) (*SftpClient, error) {
 		return nil, errors.New("config is nil")
 	}
 
-	// Parse the proxy URL.
-	parsedURL, err := url.Parse(config.ProxyUrl)
-	if err != nil {
-		return nil, err
-	}
-
-	// Extract user info if provided.
-	var auth *proxy.Auth = nil
-	if parsedURL.User != nil {
-		username := parsedURL.User.Username()
-		password, _ := parsedURL.User.Password()
-		auth = &proxy.Auth{
-			User:     username,
-			Password: password,
-		}
-	}
-
-	// Get host and port for the proxy.
-	proxyAddr := parsedURL.Host
-
-	// Create a SOCKS5 dialer using the provided proxy details.
-	dialer, err := proxy.SOCKS5("tcp", proxyAddr, auth, proxy.Direct)
-	if err != nil {
-		return nil, errors.New(fmt.Sprintf("Failed to create SOCKS5 dialer: %v", err))
-	}
-
-	// Use the public Rebex SFTP server for testing.
 	sshHost := fmt.Sprintf("%s:%d", config.Host, config.Port)
 	sshUser := config.User
 	sshPassword := config.Password
@@ -70,20 +43,56 @@ func NewSftpClient(config *Config) (*SftpClient, error) {
 		Timeout:         10 * time.Second,
 	}
 
-	// Connect to the SSH server via the proxy.
-	conn, err := dialer.Dial("tcp", sshHost)
-	if err != nil {
-		return nil, errors.New(fmt.Sprintf("Failed to dial SSH server through proxy: %v", err))
-	}
+	var sshClient *ssh.Client
 
-	// Upgrade the connection to an SSH client connection.
-	sshConn, chans, reqs, err := ssh.NewClientConn(conn, sshHost, sshConfig)
-	if err != nil {
-		return nil, errors.New(fmt.Sprintf("Failed to establish SSH connection: %v", err))
-	}
+	if config.ProxyUrl != "" {
+		// Parse the proxy URL.
+		parsedURL, err := url.Parse(config.ProxyUrl)
+		if err != nil {
+			return nil, err
+		}
 
-	sshClient := ssh.NewClient(sshConn, chans, reqs)
-	defer sshClient.Close()
+		// Extract user info if provided.
+		var auth *proxy.Auth = nil
+		if parsedURL.User != nil {
+			username := parsedURL.User.Username()
+			password, _ := parsedURL.User.Password()
+			auth = &proxy.Auth{
+				User:     username,
+				Password: password,
+			}
+		}
+
+		// Get host and port for the proxy.
+		proxyAddr := parsedURL.Host
+
+		// Create a SOCKS5 dialer using the provided proxy details.
+		dialer, err := proxy.SOCKS5("tcp", proxyAddr, auth, proxy.Direct)
+		if err != nil {
+			return nil, errors.New(fmt.Sprintf("Failed to create SOCKS5 dialer: %v", err))
+		}
+
+		// Connect to the SSH server via the proxy.
+		conn, err := dialer.Dial("tcp", sshHost)
+		if err != nil {
+			return nil, errors.New(fmt.Sprintf("Failed to dial SSH server through proxy: %v", err))
+		}
+
+		// Upgrade the connection to an SSH client connection.
+		sshConn, chans, reqs, err := ssh.NewClientConn(conn, sshHost, sshConfig)
+		if err != nil {
+			return nil, errors.New(fmt.Sprintf("Failed to establish SSH connection: %v", err))
+		}
+
+		sshClient = ssh.NewClient(sshConn, chans, reqs)
+	} else {
+		sshClient_, err := ssh.Dial("tcp", sshHost, sshConfig)
+		if err != nil {
+			return nil, errors.New(fmt.Sprintf("Failed to establish SSH connection: %v", err))
+		}
+
+		sshClient = sshClient_
+	}
 
 	// Create an SFTP client over the SSH connection.
 	sftpClient, err := sftp.NewClient(sshClient)
@@ -93,6 +102,8 @@ func NewSftpClient(config *Config) (*SftpClient, error) {
 
 	return &SftpClient{sshClient: sshClient, sftpClient: sftpClient}, nil
 }
+
+func (s *SftpClient) SftpClient() *sftp.Client { return s.sftpClient }
 
 func (s *SftpClient) Close() error {
 	if s.sshClient != nil {
